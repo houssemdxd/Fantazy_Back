@@ -12,6 +12,11 @@ import config from './config/config';
 import { Team, TeamSchema } from './team/entities/team.entity';
 import { Player, PlayerSchema } from './player/entities/player.entity';
 import { FantasyTeamModule } from './fantasy-team/fantasy-team.module';
+import { FixtureModule } from './fixture/fixture.module';
+import { RoundModule } from './round/round.module';
+import { WeeklyTeamModule } from './weekly-team/weekly-team.module';
+import { PlayerStatsModule } from './player-stats/player-stats.module';
+import { WeeklyScoreModule } from './weekly-score/weekly-score.module';
 
 @Module({
   imports: [
@@ -44,6 +49,11 @@ import { FantasyTeamModule } from './fantasy-team/fantasy-team.module';
     PlayerModule,
     TeamModule,
     FantasyTeamModule,
+    FixtureModule,
+    RoundModule,
+    WeeklyTeamModule,
+    PlayerStatsModule,
+    WeeklyScoreModule,
   ],
   controllers: [AppController],
   providers: [AppService],

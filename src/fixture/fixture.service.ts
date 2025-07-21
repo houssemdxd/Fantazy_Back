@@ -1,391 +1,112 @@
 import { Injectable } from '@nestjs/common';
-import { CreateFantasyTeamDto } from './dto/create-fantasy-team.dto';
-import { UpdateFantasyTeamDto } from './dto/update-fantasy-team.dto';
+import { CreateFixtureDto } from './dto/create-fixture.dto';
+import { UpdateFixtureDto } from './dto/update-fixture.dto';
+import { Model } from 'mongoose';
 import { InjectModel } from '@nestjs/mongoose';
-import { FlattenMaps, Model, Types } from 'mongoose';
-import { FantasyTeam } from './entities/fantasy-team.entity';
-import { Player } from 'src/player/entities/player.entity';
-import { Fixture } from 'src/fixture/entities/fixture.entity';
+import { Fixture } from './entities/fixture.entity';
 import { Team } from 'src/team/entities/team.entity';
 import { Round } from 'src/round/entities/round.entity';
-import { WeeklyTeam } from 'src/weekly-team/entities/weekly-team.entity';
-import { PlayerStat } from 'src/player-stats/entities/player-stat.entity';
-import { WeeklyScore } from 'src/weekly-score/entities/weekly-score.entity';
 
 @Injectable()
-export class FantasyTeamService {
+export class FixtureService {
+
+constructor(
+@InjectModel('Fixture') private readonly fixtureModel: Model<Fixture>,
+@InjectModel('Team') private readonly teamModel: Model<Team>,
+@InjectModel('Round') private readonly roundModel: Model<Round>,
 
 
- constructor(
-    @InjectModel('FantasyTeam') private readonly fantasyTeamModel: Model<FantasyTeam>,
-    @InjectModel('Fixture') private readonly fixtureModel: Model<Fixture>,
-    @InjectModel('Team') private readonly teamModel: Model<Team>,
-    @InjectModel('Round') private readonly roundModel: Model<Round>,
-@InjectModel(WeeklyTeam.name) private readonly weeklyTeamModel: Model<WeeklyTeam>,
-    @InjectModel('Player') private readonly playerModel: Model<Player>,
-        @InjectModel('PlayerStat') private readonly playerStatModel: Model<PlayerStat>,
-        @InjectModel('WeeklyScore') private readonly WeeklyScoreModel: Model<WeeklyScore>,
-
-
-    
   ) {}
-async getPlayerStatsByUser(userId: string) {
-  // 1. Fetch all rounds sorted ascending by roundNumber
-  const rounds = await this.roundModel.find().sort({ roundNumber: 1 }).lean();
 
-  if (rounds.length === 0) {
-    console.warn('No rounds found in DB');
-    return [];
-  }
 
-  // Get the latest round (current round)
-  const currentRound = rounds[rounds.length - 1];
-
-  // 2. Fetch all weekly teams of the user, sorted by roundNumber ascending (populate round)
-  const weeklyTeams = await this.weeklyTeamModel
-    .find({ user_id: new Types.ObjectId(userId) })
-    .populate('round')
-    .sort({ 'round.roundNumber': 1 })
-    .lean();
-
-  if (weeklyTeams.length === 0) {
-    console.warn('No weekly teams found for user:', userId);
-    return [];
-  }
-
-  // 3. Create a map from roundNumber to weeklyTeam for quick lookup
-  const weeklyTeamMap = new Map<number, any>();
-  for (const team of weeklyTeams) {
-    const roundObj = team.round as { _id: Types.ObjectId; roundNumber: number };
-    if (roundObj?.roundNumber !== undefined) {
-      weeklyTeamMap.set(roundObj.roundNumber, team);
-    }
-  }
-
-  const results = [];
-
-  let lastKnownTeam = null;
-
-  // 4. Loop from round 1 to currentRound.roundNumber (all rounds)
-  for (const round of rounds) {
-    if (round.roundNumber > currentRound.roundNumber) break; // stop if round beyond currentRound
-
-    // Update lastKnownTeam if user has a team for this round
-    if (weeklyTeamMap.has(round.roundNumber)) {
-      lastKnownTeam = weeklyTeamMap.get(round.roundNumber);
-    }
-
-    if (!lastKnownTeam) {
-      // If no team at all so far, skip or push empty players
-      results.push({
-        round: round.roundNumber,
-        players: [],
-      });
-      continue;
-    }
-
-    // 5. Get fantasy players for the last known team (for the round)
-    const fantasyPlayers = await this.fantasyTeamModel
-      .find({ WeeklyTeam: lastKnownTeam._id })
-      .lean();
-
-    // Extract player IDs
-    const playerIds = fantasyPlayers.map(fp => fp.player_id);
-
-    // 6. Fetch PlayerStats for these players but **for the current round** (important!)
-    const playerStats = await this.playerStatModel
-      .find({
-        round_id: round._id,        // round_id matches current round's _id here
-        player_id: { $in: playerIds },
-      })
-      .lean();
-
-    // 7. Fetch player details for these player IDs
-    const players = await this.playerModel
-      .find({ _id: { $in: playerIds } })
-      .lean();
-
-    // 8. Merge player info with their score for this round
-    const playersWithStats = players.map(player => {
-      const stat = playerStats.find(ps => ps.player_id === player._id);
-      return {
-        _id: player._id,
-        name: player.name,
-        position: player.position,
-        image: player.image,
-        score: stat?.score ?? 0,
-      };
-    });
-
-    // 9. Add to results
-    results.push({
-      round: round.roundNumber,
-      players: playersWithStats,
-    });
-  }
-
-  return results;
-}
-//------------------------------------------------------------------------------------------------------------------------
-
-
-//---------------------------------------------------------------------------------------------------------------------
-async getLatestFantasyTeamWithAdversaryInfo(userId: string) {
-  const userObjectId = new Types.ObjectId(userId);
-
-  // 1. Get the user's latest WeeklyTeam
-  const latestWeeklyTeam = await this.weeklyTeamModel
-    .findOne({ user_id: userObjectId })
-    .sort({ createdAt: -1 })
-    .populate('round')
-    .exec();
-
-  if (!latestWeeklyTeam || !latestWeeklyTeam.round) {
-    return { weeklyTeamId: latestWeeklyTeam?._id ?? null, players: [] };
-  }
-
-  const currentRound = latestWeeklyTeam.round as FlattenMaps<Round>;
-
-  // 2. Get the fantasy players
-  const fantasyPlayers = await this.fantasyTeamModel
-    .find({ WeeklyTeam: latestWeeklyTeam._id })
-    .populate({
-      path: 'player_id',
-      populate: { path: 'team_id' },
-    })
-    .exec();
-
-  // 3. Map and enrich each fantasy player
-  const enrichedPlayers = await Promise.all(
-    fantasyPlayers.map(async (entry) => {
-      const player = entry.player_id as any;
-      if (!player || !player.team_id) return null;
-
-      const teamId = player.team_id._id;
-
-      // Use the round from latestWeeklyTeam, NOT latestRound from roundModel
-      const fixture = await this.fixtureModel
-        .findOne({
-          round: (currentRound as any)._id,
-          $or: [
-            { homeTeam: teamId },
-            { awayTeam: teamId },
-          ],
-        })
-        .populate(['homeTeam', 'awayTeam'])
-        .lean();
-
-      const result = {
-        id:player.id,
-        name: player.name,
-        position: player.position,
-        team: player.team_id.name,
-        adversary: null as string | null,
-        score: 0,
-        isCaptain: entry.isCaptain,
-        isViceCaptain: entry.isViceCaptain,
-        isBench: entry.isBench,
-      };
-      if (fixture) {
-        const eventDateTime = new Date(`${fixture.date}T${fixture.eventTime}`);
-        console.log( fixture.homeTeam +" "+ eventDateTime)
-        const hasPlayed = eventDateTime > new Date();
-
-        const adversaryTeam =
-          fixture.homeTeam._id.toString() === teamId.toString()
-            ? fixture.awayTeam
-            : fixture.homeTeam;
-
-  // Check if it's populated (has name property) or just an ObjectId
-  if (adversaryTeam && typeof adversaryTeam === 'object' && 'name' in adversaryTeam) {
-    result.adversary = (adversaryTeam as any).name;
-  } else {
-    // Fallback: it's still an ObjectId, so we need to fetch the team
-    const teamDoc = await this.teamModel.findById(adversaryTeam).lean();
-
-    const scorePlayer = (
-  await this.playerStatModel.findOne({
-    round: currentRound,
-    player_id: new Types.ObjectId(player.id),
-  })
-)?.score
-
-    console.log("thi sis the score "+scorePlayer)
-
-    result.adversary = teamDoc?.name || 'Unknown Team';
-    result.score  = scorePlayer
-  }
-
-
-
-
-        console.log(hasPlayed)
-        // If match has been played, get score
-        if (hasPlayed) {
-            console.log("try to het the score of the player ")
-            console.log(player._id)
-            console.log(currentRound)
-                var  round_if = this.roundModel.findOne({roundNumber : currentRound.roundNumber});
-
-
-var lastroundid= (await round_if).id
-
-console.log(lastroundid)
-          const stat = await this.playerStatModel.findOne({
-            player_id: player._id,
-            round_id: new Types.ObjectId(lastroundid),
-          }).lean();
-
-            console.log(stat)
-
-          if (stat) {
-            result.score = stat.score || 0;
-          }
-        }
-      }
-
-      return result;
-    })
-  );
-
-  return {
-    weeklyTeamId: latestWeeklyTeam._id,
-    players: enrichedPlayers.filter((p) => p !== null),
-  };
-}
-
-//-------------------------------------------------------------------------------------------------------------------------------------------------
-async calculateScore(userId: string): Promise<void> {
-  // 1. Get the latest fantasy team
-  const fantasyTeam = await this.getLatestFantasyTeamWithAdversaryInfo(userId);
-
-  if (!fantasyTeam || !fantasyTeam.players || fantasyTeam.players.length === 0) {
-    throw new Error('No fantasy team found or team is empty.');
-  }
-
-  //console.log(fantasyTeam)
-  let totalScore = 0;
-
-var currentRound =  this.roundModel
-    .findOne()
-    .sort({ roundNumber: -1 }) // Sort descending by roundNumber
-    .exec();
-    var currentRoundId = (await currentRound)._id
-
-  for (const player of fantasyTeam.players) {
-    // 2. Get player stat
-    const playerStat = await this.playerStatModel.findOne({
-      player_id: player.id,
-      round_id:  currentRoundId, // You must ensure roundId is included in the result
-    });
-            console.log("this istge plkayer stats"+playerStat)
-    if (!playerStat) continue; // Skip if no stats found
-
-    let score = playerStat.score || 0;
-
-    // 3. Apply user settings
-    if (player.isCaptain) {
-      score *= 2;
-    } else if (player.isViceCaptain) {
-      score *= 1.5;
-    } else if (player.isBench) {
-      score = 0;
-    }
-
-    // 4. Accumulate
-    totalScore += score;
-  }
-
-  // 5. Upsert WeeklyScore (insert or update)
-  await this.WeeklyScoreModel.findOneAndUpdate(
-    {
-      user: new Types.ObjectId(userId),
-      round: currentRoundId,
-    },
-    {
-      user:  new Types.ObjectId(userId),
-      round: currentRoundId,
-      score: totalScore,
-    },
-    { upsert: true, new: true }
-  );
-}
-
-
-//--------------------------------------------------------------------------------------------------------------------------------------------
-
-async saveFantasyTeam(
-  userId: string,
-  players: {
-    player_id: number;
-    isCaptain: boolean;
-    isViceCaptain: boolean;
-    isBench: boolean;
-  }[],
-): Promise<FantasyTeam[]> {
-  const userObjectId = new Types.ObjectId(userId);
-
-  // 1. Get the latest round (assumes roundNumber is increasing)
-  const latestRound = await this.roundModel.findOne().sort({ roundNumber: -1 });
-  if (!latestRound) {
-    throw new Error('No round found');
-  }
-
-  // 2. Create a new WeeklyTeam
-  const weeklyTeam = await this.weeklyTeamModel.create({
-    user_id: userObjectId,
-    round: latestRound._id,
-    nb_transfert: 2,
-    score: 0,
-  });
-
-  // 3. Delete previous fantasy team for this user
- // await this.fantasyTeamModel.deleteMany({ WeeklyTeam: weeklyTeam._id });
-
-  // 4. Create the new fantasy team linked to the WeeklyTeam
-  const fantasyTeamDocs = players.map((player) => ({
-    player_id: player.player_id,
-    isCaptain: player.isCaptain,
-    isViceCaptain: player.isViceCaptain,
-    isBench: player.isBench,
-    WeeklyTeam: weeklyTeam._id, // link to new weekly team
-  }));
-
-  const createdFantasyTeam = await this.fantasyTeamModel.insertMany(fantasyTeamDocs);
-
-  // 5. Optionally update weeklyTeam to reference one of its fantasy players
-  // (If this is necessary, otherwise skip it)
-  if (createdFantasyTeam.length > 0) {
-    await this.weeklyTeamModel.updateOne(
-      { _id: weeklyTeam._id },
-      { fantasyTeam: createdFantasyTeam[0]._id } // or use a better strategy
-    );
-  }
-
-  return createdFantasyTeam;
-}
-
-//-------------------------------------------------------------------------------------------------------------------------------------------------
-
-  create(createFantasyTeamDto: CreateFantasyTeamDto) {
-    return 'This action adds a new fantasyTeam';
+  create(createFixtureDto: CreateFixtureDto) {
+    return 'This action adds a new fixture';
   }
 
   findAll() {
-    return `This action returns all fantasyTeam`;
+    return `This action returns all fixture`;
   }
 
   findOne(id: number) {
-    return `This action returns a #${id} fantasyTeam`;
+    return `This action returns a #${id} fixture`;
   }
 
-  update(id: number, updateFantasyTeamDto: UpdateFantasyTeamDto) {
-    return `This action updates a #${id} fantasyTeam`;
+  update(id: number, updateFixtureDto: UpdateFixtureDto) {
+    return `This action updates a #${id} fixture`;
   }
 
   remove(id: number) {
-    return `This action removes a #${id} fantasyTeam`;
+    return `This action removes a #${id} fixture`;
   }
+
+
+
+getSimplifiedFixtures() {
+    const response = this.getSampleFixturesResponse();
+    return response.result.map(fixture => ({
+      homeTeam: fixture.event_home_team,
+      homeTeamKey: fixture.home_team_key,
+      awayTeam: fixture.event_away_team,
+      awayTeamKey: fixture.away_team_key,
+      eventTime: fixture.event_time,
+      date: fixture.event_date,
+      league: fixture.league_name,
+      event_status :fixture.event_status
+    }));
+  }
+
+async createFixturesFromApi(): Promise<void> {
+  const fixtures = this.getSimplifiedFixtures();
+
+  // Get the round with the highest roundNumber
+  const latestRound = await this.roundModel.findOne().sort({ roundNumber: -1 });
+  if (!latestRound) {
+    console.warn('No round found. Please create a round before adding fixtures.');
+    return;
+  }
+
+  for (const f of fixtures) {
+    const homeTeam = await this.teamModel.findOne({ team_id: f.homeTeamKey });
+    if (!homeTeam) {
+      console.warn(`Home team with key ${f.homeTeamKey} not found.`);
+      continue;
+    }
+
+    const awayTeam = await this.teamModel.findOne({ team_id: f.awayTeamKey });
+    if (!awayTeam) {
+      console.warn(`Away team with key ${f.awayTeamKey} not found.`);
+      continue;
+    }
+
+    const exists = await this.fixtureModel.findOne({
+      homeTeam: homeTeam._id,
+      awayTeam: awayTeam._id,
+      date: f.date,
+      eventTime: f.eventTime,
+    });
+
+    if (exists) {
+      console.log(`Fixture on ${f.date} at ${f.eventTime} already exists.`);
+      continue;
+    }
+
+    const fixture = new this.fixtureModel({
+      homeTeam: homeTeam._id,
+      awayTeam: awayTeam._id,
+      eventTime: f.eventTime,
+      date: f.date,
+      league: f.league,
+      event_status: f.event_status,
+      round: latestRound._id, // 🔥 Add this line
+    });
+
+    await fixture.save();
+    console.log(`Saved fixture: ${homeTeam.name} vs ${awayTeam.name} on ${f.date}`);
+  }
+}
+
+
+
 
 
 
@@ -3239,234 +2960,4 @@ async saveFantasyTeam(
   }
 
 
-
-
-
-
-
-
-
-
-
-getSimplifiedFixtures() {
-    const response = this.getSampleFixturesResponse();
-    return response.result.map(fixture => ({
-      homeTeam: fixture.event_home_team,
-      homeTeamKey: fixture.home_team_key,
-      awayTeam: fixture.event_away_team,
-      awayTeamKey: fixture.away_team_key,
-      eventTime: fixture.event_time,
-      date: fixture.event_date,
-      league: fixture.league_name,
-      event_status :fixture.event_status
-    }));
-  }
-
-async updateLivePlayerStatsFromApi() {
-  console.log('[updateLivePlayerStatsFromApi] Starting update...');
-
-  const apiData = this.getMockLiveScores();
-  console.log('[updateLivePlayerStatsFromApi] Retrieved mock data:', JSON.stringify(apiData, null, 2));
-
-  if (!apiData?.success || !Array.isArray(apiData.result)) {
-    console.warn('[updateLivePlayerStatsFromApi] Invalid or missing result in API data');
-    return;
-  }
-
-  const currentRound = await this.roundModel.findOne().sort({ roundNumber: -1 });
-  if (!currentRound) {
-    throw new Error('[updateLivePlayerStatsFromApi] No current round found');
-  }
-  console.log(`[updateLivePlayerStatsFromApi] Current round ID: ${currentRound._id}, Round number: ${currentRound.roundNumber}`);
-
-  for (const match of apiData.result) {
-    const homeTeamId = Number(match.home_team_key);
-    const awayTeamId = Number(match.away_team_key);
-    console.log(`\nProcessing match: ${homeTeamId} vs ${awayTeamId}`);
-
-    const playerScores: Record<number, number> = {};
-
-    // ⚽ Process Goals
-    for (const scorer of match.goalscorers || []) {
-      if (scorer.home_scorer) {
-        const player = await this.findPlayerByNameAndTeam(scorer.home_scorer, homeTeamId);
-        console.log(`[Goal] Home scorer: ${scorer.home_scorer} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 5;
-      }
-      if (scorer.away_scorer) {
-        const player = await this.findPlayerByNameAndTeam(scorer.away_scorer, awayTeamId);
-        console.log(`[Goal] Away scorer: ${scorer.away_scorer} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 5;
-      }
-    }
-
-    // 🟨 Process Cards
-    for (const card of match.cards || []) {
-      if (card.home_fault) {
-        const player = await this.findPlayerByNameAndTeam(card.home_fault, homeTeamId);
-        console.log(`[Card] Home card: ${card.home_fault} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) - 1;
-      }
-      if (card.away_fault) {
-        const player = await this.findPlayerByNameAndTeam(card.away_fault, awayTeamId);
-        console.log(`[Card] Away card: ${card.away_fault} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) - 1;
-      }
-    }
-
-    // 🔁 Process Substitutes
-    for (const sub of match.substitutes || []) {
-      if (sub.home_scorer?.in) {
-        const player = await this.findPlayerByNameAndTeam(sub.home_scorer.in, homeTeamId);
-        console.log(`[Substitute] Home in: ${sub.home_scorer.in} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 1;
-      }
-      if (sub.away_scorer?.in) {
-        const player = await this.findPlayerByNameAndTeam(sub.away_scorer.in, awayTeamId);
-        console.log(`[Substitute] Away in: ${sub.away_scorer.in} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 1;
-      }
-    }
-
-    // 📝 Update PlayerStat in DB
-    for (const [playerId, score] of Object.entries(playerScores)) {
-      console.log(`[DB Update] Player ID: ${playerId}, Score delta: ${score}`);
-      const result = await this.playerStatModel.findOneAndUpdate(
-        { player_id: Number(playerId), round_id: currentRound._id },
-        { $inc: { score: score } },
-        { upsert: true, new: true }
-      );
-      console.log(`[DB Update Result]`, result);
-    }
-  }
-
-  console.log('[updateLivePlayerStatsFromApi] Finished updating player stats.');
 }
-
-private async findPlayerByNameAndTeam(playerName: string, apiTeamId: number) {
-  const team = await this.teamModel.findOne({ team_id: apiTeamId });
-  if (!team) return null;
-
-  return this.playerModel.findOne({
-    name: { $regex: new RegExp(`^${this.escapeRegex(playerName)}$`, 'i') },
-    team_id: team._id, // Must use ObjectId
-  });
-}
-private escapeRegex(text: string): string {
-  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-}
-
-
-
-  getMockLiveScores(): any {
-    return {
-      success: 1,
-      result: [
-        {
-          event_key: '99887',
-          event_date: '2025-07-19',
-          event_time: '17:00',
-          event_home_team: 'EGS Gafsa',
-          home_team_key: '7594',
-          event_away_team: 'Bizertin',
-          away_team_key: '7623',
-          event_halftime_result: '1 - 0',
-          event_final_result: '',
-          event_ft_result: '',
-          event_penalty_result: '',
-          event_status: '74', // 74th minute
-          country_name: 'Tunisia',
-          league_name: 'Ligue Professionnelle 1',
-          league_key: '100',
-          league_round: '25',
-          league_season: '2024/2025',
-          event_live: '1',
-          event_stadium: 'Stade Gafsa',
-          event_referee: 'Ali Ben Salah',
-          event_country_key: '27',
-          league_logo: 'https://example.com/logo_leagues/tunisia_ligue1.png',
-          country_logo: 'https://example.com/logo_country/tunisia.png',
-          event_home_formation: '4-3-3',
-          event_away_formation: '4-4-2',
-          fk_stage_key: '888',
-          stage_name: 'Regular Season',
-          goalscorers: [
-            {
-              time: '23',
-              home_scorer: 'N. Agbre',
-              score: '1 - 0',
-              away_scorer: '',
-            },
-            {
-              time: '61',
-              home_scorer: '',
-              score: '1 - 1',
-              away_scorer: 'Bizertin Player 9',
-            },
-          ],
-          cards: [
-            {
-              time: '33',
-              home_fault: 'A. Barbati',
-              card: 'yellow card',
-              away_fault: '',
-            },
-          ],
-          substitutes: [
-            {
-              time: '46',
-              home_scorer: {
-                in: 'A. Chebbi',
-                out: 'B. Chaabani',
-              },
-              score: 'substitution',
-              away_scorer: [],
-            },
-          ],
-          lineups: {
-            home_team: {
-              starting_lineups: [
-                { player: 'N. Agbre', player_number: '4', player_country: 'Tunisia' },
-                { player: 'A. Barbati', player_number: '5', player_country: 'Tunisia' },
-                { player: 'A. Horchani', player_number: '6', player_country: 'Tunisia' },
-                { player: 'O. Jebali', player_number: '7', player_country: 'Tunisia' },
-                { player: 'N. Khedher', player_number: '8', player_country: 'Tunisia' },
-              ],
-              substitutes: [
-                { player: 'B. Chaabani', player_number: '9', player_country: 'Tunisia' },
-                { player: 'A. Chebbi', player_number: '10', player_country: 'Tunisia' },
-                { player: 'A. Chokri', player_number: '11', player_country: 'Tunisia' },
-              ],
-              coaches: [
-                { coache: 'Coach Gafsa', coache_country: 'Tunisia' },
-              ],
-            },
-          },
-          statistics: [
-            { type: 'Shots Blocked', home: '2', away: '5' },
-            { type: 'Shots Inside Box', home: '6', away: '3' },
-            { type: 'Shots Outside Box', home: '4', away: '6' },
-            { type: 'Possession', home: '58%', away: '42%' },
-            { type: 'Yellow Cards', home: '1', away: '1' },
-            { type: 'Fouls', home: '12', away: '14' },
-          ],
-        },
-      ],
-    };
-  }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
