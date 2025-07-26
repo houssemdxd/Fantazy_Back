@@ -24,7 +24,11 @@ private readonly playerStatService : PlayerStatsService
   ) {} // ✅ Injected here
 private isCronRunning = false;
 
-@Cron('0 */1 * * * *') // Every 2 minutes
+
+
+
+//@Cron('0 */1 * * * *') // Every 2 minutes
+/*
 async handleCron() {
   if (this.isCronRunning) return;
   this.isCronRunning = true;
@@ -60,6 +64,6 @@ async handleCron() {
   } finally {
     this.isCronRunning = false;
   }
-}
+}*/
 
 }

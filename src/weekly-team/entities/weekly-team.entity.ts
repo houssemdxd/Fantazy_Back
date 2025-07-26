@@ -4,6 +4,7 @@ import { FantasyTeam } from 'src/fantasy-team/entities/fantasy-team.entity';
 import { Round } from 'src/round/entities/round.entity';
 
 export type WeeklyTeamDocument = WeeklyTeam & Document;
+@Schema({ timestamps: true }) // Add this
 
 @Schema()
 export class WeeklyTeam {

@@ -8,7 +8,21 @@ import { Types } from 'mongoose';
 export class FantasyTeamController {
   constructor(private readonly fantasyTeamService: FantasyTeamService) {}
 
-
+@Post(':userId/update')
+  async updateFantasyTeam(
+    @Param('userId') userId: string,
+    @Body() body: {
+      players: {
+        player_id: number;
+        isCaptain: boolean;
+        isViceCaptain: boolean;
+        isBench: boolean;
+      }[];
+    },
+  ) {
+    await this.fantasyTeamService.updateFantasyTeam(userId, body.players);
+    return { message: 'Fantasy team updated or created successfully.' };
+  }
 
 
 @Get('liveupdates')

@@ -131,20 +131,31 @@ async getPlayerStatsByUser(userId: string) {
 
 //---------------------------------------------------------------------------------------------------------------------
 async getLatestFantasyTeamWithAdversaryInfo(userId: string) {
-  const userObjectId = new Types.ObjectId(userId);
 
-  // 1. Get the user's latest WeeklyTeam
-  const latestWeeklyTeam = await this.weeklyTeamModel
-    .findOne({ user_id: userObjectId })
-    .sort({ createdAt: -1 })
-    .populate('round')
-    .exec();
+  const userObjectId = new Types.ObjectId(userId);
+// 1. Get ALL WeeklyTeams for this user and populate round
+const allWeeklyTeams = await this.weeklyTeamModel
+  .find({ user_id: userObjectId })
+  .populate('round')
+  .exec();
+
+if (!allWeeklyTeams.length) {
+  return { weeklyTeamId: null, players: [] };
+}
+
+// 2. Sort by round.roundNumber in memory
+const latestWeeklyTeam = allWeeklyTeams.reduce((latest, current) => {
+  const currentRoundNumber = (current.round as Round)?.roundNumber || 0;
+  const latestRoundNumber = (latest.round as Round)?.roundNumber || 0;
+  return currentRoundNumber > latestRoundNumber ? current : latest;
+});
 
   if (!latestWeeklyTeam || !latestWeeklyTeam.round) {
     return { weeklyTeamId: latestWeeklyTeam?._id ?? null, players: [] };
   }
 
-  const currentRound = latestWeeklyTeam.round as FlattenMaps<Round>;
+  //const currentRound = latestWeeklyTeam.round as FlattenMaps<Round>;
+  const currentRound = await this.roundModel.findOne().sort({ roundNumber: -1 }).exec();
 
   // 2. Get the fantasy players
   const fantasyPlayers = await this.fantasyTeamModel
@@ -174,7 +185,9 @@ async getLatestFantasyTeamWithAdversaryInfo(userId: string) {
         })
         .populate(['homeTeam', 'awayTeam'])
         .lean();
-
+        console.log("this is iteh team id we looking for "+teamId)
+        console.log("thusis the  last round id "+(currentRound as any)._id,)
+        console.log("rkgfoierhgiurgurigbtr"+entry)
       const result = {
         id:player.id,
         name: player.name,
@@ -185,12 +198,18 @@ async getLatestFantasyTeamWithAdversaryInfo(userId: string) {
         isCaptain: entry.isCaptain,
         isViceCaptain: entry.isViceCaptain,
         isBench: entry.isBench,
+        dispaly_ennemy :false
       };
+      console.log("fixture before the if conditio "+fixture)
       if (fixture) {
+        console.log("ficxture inside the if ")
         const eventDateTime = new Date(`${fixture.date}T${fixture.eventTime}`);
         console.log( fixture.homeTeam +" "+ eventDateTime)
-        const hasPlayed = eventDateTime > new Date();
+        const hasPlayed = eventDateTime < new Date();
+        result.dispaly_ennemy = !hasPlayed
 
+
+        console.log("hasplayed value : "+hasPlayed)
         const adversaryTeam =
           fixture.homeTeam._id.toString() === teamId.toString()
             ? fixture.awayTeam
@@ -218,11 +237,10 @@ async getLatestFantasyTeamWithAdversaryInfo(userId: string) {
 
 
 
-
         console.log(hasPlayed)
         // If match has been played, get score
         if (hasPlayed) {
-            console.log("try to het the score of the player ")
+            console.log("########################try to het the score of the player ")
             console.log(player._id)
             console.log(currentRound)
                 var  round_if = this.roundModel.findOne({roundNumber : currentRound.roundNumber});
@@ -236,7 +254,7 @@ console.log(lastroundid)
             round_id: new Types.ObjectId(lastroundid),
           }).lean();
 
-            console.log(stat)
+            console.log("hioooooooooooooooooooooooooooo"+stat)
 
           if (stat) {
             result.score = stat.score || 0;
@@ -310,6 +328,99 @@ var currentRound =  this.roundModel
     { upsert: true, new: true }
   );
 }
+async updateFantasyTeam(
+  userId: string,
+  players: {
+    player_id: number;
+    isCaptain: boolean;
+    isViceCaptain: boolean;
+    isBench: boolean;
+  }[],
+): Promise<void> {
+  const userObjectId = new Types.ObjectId(userId);
+
+  // Get latest round
+  const currentRound = await this.roundModel.findOne().sort({ roundNumber: -1 }).exec();
+  if (!currentRound) throw new Error('No round found');
+
+  // Get user's last WeeklyTeam
+  const lastWeeklyTeam = await this.getLastWeeklyTeam(userId);
+
+  console.log("this is the the last weklyteam "+lastWeeklyTeam.round)
+  console.log("this is the last round id "+currentRound)
+if (
+  lastWeeklyTeam &&
+  String((lastWeeklyTeam.round as any)._id || lastWeeklyTeam.round) === String(currentRound._id)
+) {
+  const weeklyTeamId = (lastWeeklyTeam as any)._id;
+
+  // ✅ REMOVE ALL existing fantasy players for that weekly team
+  await this.fantasyTeamModel.deleteMany({ WeeklyTeam: weeklyTeamId });
+
+  // ✅ Filter out duplicates from input
+  const uniquePlayersMap = new Map<number, any>();
+  for (const player of players) {
+    uniquePlayersMap.set(player.player_id, player);
+  }
+  const uniquePlayers = [...uniquePlayersMap.values()];
+
+  // ✅ Insert all fresh
+  const newFantasyPlayers = uniquePlayers.map((player) => ({
+    player_id: player.player_id,
+    isCaptain: player.isCaptain,
+    isViceCaptain: player.isViceCaptain,
+    isBench: player.isBench,
+    WeeklyTeam: weeklyTeamId,
+  }));
+
+  await this.fantasyTeamModel.insertMany(newFantasyPlayers);
+
+  console.log('✅ Fantasy team replaced for existing weekly team.');
+}
+
+
+ else {
+    // 🆕 Create new WeeklyTeam
+    const newWeeklyTeam = await this.weeklyTeamModel.create({
+      user_id: userObjectId,
+      round: currentRound._id,
+      nb_transfert: 2,
+      score: 0,
+    });
+
+    // Insert new FantasyTeam entries
+    const fantasyTeams = players.map(player => ({
+      player_id: player.player_id,
+      isCaptain: player.isCaptain,
+      isViceCaptain: player.isViceCaptain,
+      isBench: player.isBench,
+      WeeklyTeam: newWeeklyTeam._id,
+    }));
+
+    await this.fantasyTeamModel.insertMany(fantasyTeams);
+    console.log("fantazyteam created new ")
+  }
+}
+
+async getLastWeeklyTeam(userId: string): Promise<WeeklyTeam | null> {
+  const teams = await this.weeklyTeamModel
+    .find({ user_id: new Types.ObjectId(userId) })
+    .populate('round')
+    .exec();
+  if (!teams.length) return null;
+
+  // Sort manually by round.roundNumber
+  teams.sort((a, b) => {
+    const aRoundNumber = (a.round as Round).roundNumber
+    const bRoundNumber = (b.round as Round).roundNumber
+    return bRoundNumber - aRoundNumber; // descending
+  });
+  return teams[0];
+}
+
+
+
+
 
 
 //--------------------------------------------------------------------------------------------------------------------------------------------
