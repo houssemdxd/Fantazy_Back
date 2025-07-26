@@ -28,6 +28,7 @@ import { WeeklyScoreSchema } from 'src/weekly-score/entities/weekly-score.entity
 ]),
   ],
   controllers: [FantasyTeamController],
-  providers: [FantasyTeamService]
+  providers: [FantasyTeamService],
+  exports:[FantasyTeamService]
 })
 export class FantasyTeamModule {}

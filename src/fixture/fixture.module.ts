@@ -19,6 +19,8 @@ import { Round, RoundSchema } from 'src/round/entities/round.entity';
     ]),
   ],
   controllers: [FixtureController],
-  providers: [FixtureService]
+  providers: [FixtureService],
+  exports: [FixtureService], // 👈 Needed to use in other modules
+
 })
 export class FixtureModule {}

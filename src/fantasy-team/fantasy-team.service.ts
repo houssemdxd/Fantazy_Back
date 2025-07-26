@@ -367,7 +367,7 @@ async saveFantasyTeam(
 
 //-------------------------------------------------------------------------------------------------------------------------------------------------
 
-  create(createFantasyTeamDto: CreateFantasyTeamDto) {
+  create() {
     return 'This action adds a new fantasyTeam';
   }
 
@@ -1332,8 +1332,8 @@ async saveFantasyTeam(
         "statistics": []
     }, {
         "event_key": 1433006,
-        "event_date": "2025-04-20",
-        "event_time": "15:30",
+        "event_date": "2025-07-26",
+        "event_time": "12:18",
         "event_home_team": "Monastir",
         "home_team_key": 7616,
         "event_away_team": "Soliman",
@@ -3262,6 +3262,7 @@ getSimplifiedFixtures() {
     }));
   }
 
+
 async updateLivePlayerStatsFromApi() {
   console.log('[updateLivePlayerStatsFromApi] Starting update...');
 
@@ -3277,196 +3278,605 @@ async updateLivePlayerStatsFromApi() {
   if (!currentRound) {
     throw new Error('[updateLivePlayerStatsFromApi] No current round found');
   }
-  console.log(`[updateLivePlayerStatsFromApi] Current round ID: ${currentRound._id}, Round number: ${currentRound.roundNumber}`);
 
   for (const match of apiData.result) {
     const homeTeamId = Number(match.home_team_key);
     const awayTeamId = Number(match.away_team_key);
-    console.log(`\nProcessing match: ${homeTeamId} vs ${awayTeamId}`);
 
     const playerScores: Record<number, number> = {};
+    const substituteScores: Record<number, number> = {}; // 1 or 2 points
+    const allInMatchPlayers = new Set<number>(); // To track only those who played
 
-    // ⚽ Process Goals
-    for (const scorer of match.goalscorers || []) {
-      if (scorer.home_scorer) {
-        const player = await this.findPlayerByNameAndTeam(scorer.home_scorer, homeTeamId);
-        console.log(`[Goal] Home scorer: ${scorer.home_scorer} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 5;
-      }
-      if (scorer.away_scorer) {
-        const player = await this.findPlayerByNameAndTeam(scorer.away_scorer, awayTeamId);
-        console.log(`[Goal] Away scorer: ${scorer.away_scorer} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 5;
+    const subs = match.substitutes || [];
+    const homeSubs = subs.filter(s => s.home_scorer);
+    const awaySubs = subs.filter(s => s.away_scorer);
+
+    // Step 1: Give 2 points to all starting XI
+    for (const side of ['home_team', 'away_team']) {
+      const lineup = match.lineups?.[side]?.starting_lineups || [];
+      const teamId = side === 'home_team' ? homeTeamId : awayTeamId;
+
+      for (const starter of lineup) {
+        const player = await this.findPlayerByNameAndTeam(starter.player, teamId);
+        if (!player) continue;
+        substituteScores[player._id] = 2;
+        allInMatchPlayers.add(player._id);
       }
     }
 
-    // 🟨 Process Cards
+    // Step 2: Process substitutions
+    for (const sub of [...homeSubs, ...awaySubs]) {
+      const teamId = sub.home_scorer ? homeTeamId : awayTeamId;
+      const outName = sub.home_scorer?.out || sub.away_scorer?.out;
+      const inName = sub.home_scorer?.in || sub.away_scorer?.in;
+
+      // Subbed out → reduce to 1 point
+      if (outName) {
+        const playerOut = await this.findPlayerByNameAndTeam(outName, teamId);
+        if (playerOut && substituteScores[playerOut._id] === 2) {
+          substituteScores[playerOut._id] = 1;
+        }
+      }
+
+      // Subbed in → assign 1 point
+      if (inName) {
+        const playerIn = await this.findPlayerByNameAndTeam(inName, teamId);
+        if (playerIn) {
+          substituteScores[playerIn._id] = 1;
+          allInMatchPlayers.add(playerIn._id);
+        }
+      }
+    }
+
+    // Step 3: Apply appearance scores
+    for (const [playerIdStr, subScore] of Object.entries(substituteScores)) {
+      const playerId = Number(playerIdStr);
+      playerScores[playerId] = (playerScores[playerId] || 0) + subScore;
+    }
+
+    // Step 4: Goals (and own goals)
+    for (const goal of match.goalscorers || []) {
+      const isOwnGoal = (scorer: string) => scorer?.includes('(o.g.)');
+
+      const processGoal = async (scorerName: string, teamId: number) => {
+        if (!scorerName) return;
+        const isOG = isOwnGoal(scorerName);
+        const cleanName = scorerName.replace(' (o.g.)', '').trim();
+
+        const player = await this.findPlayerByNameAndTeam(cleanName, teamId);
+        if (!player) return;
+
+        allInMatchPlayers.add(player._id);
+        const points = isOG ? -2 : this.getGoalPointsByPosition(player.position);
+        playerScores[player._id] = (playerScores[player._id] || 0) + points;
+      };
+
+      if (goal.home_scorer) await processGoal(goal.home_scorer, homeTeamId);
+      if (goal.away_scorer) await processGoal(goal.away_scorer, awayTeamId);
+    }
+
+    // Step 5: Cards
     for (const card of match.cards || []) {
-      if (card.home_fault) {
-        const player = await this.findPlayerByNameAndTeam(card.home_fault, homeTeamId);
-        console.log(`[Card] Home card: ${card.home_fault} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) - 1;
-      }
-      if (card.away_fault) {
-        const player = await this.findPlayerByNameAndTeam(card.away_fault, awayTeamId);
-        console.log(`[Card] Away card: ${card.away_fault} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) - 1;
-      }
+      const processCard = async (playerName: string, teamId: number, type: string) => {
+        const player = await this.findPlayerByNameAndTeam(playerName, teamId);
+        if (!player) return;
+        allInMatchPlayers.add(player._id);
+
+        const deduction = type === 'red card' ? -3 : -1;
+        playerScores[player._id] = (playerScores[player._id] || 0) + deduction;
+      };
+
+      if (card.home_fault) await processCard(card.home_fault, homeTeamId, card.card);
+      if (card.away_fault) await processCard(card.away_fault, awayTeamId, card.card);
     }
 
-    // 🔁 Process Substitutes
-    for (const sub of match.substitutes || []) {
-      if (sub.home_scorer?.in) {
-        const player = await this.findPlayerByNameAndTeam(sub.home_scorer.in, homeTeamId);
-        console.log(`[Substitute] Home in: ${sub.home_scorer.in} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 1;
-      }
-      if (sub.away_scorer?.in) {
-        const player = await this.findPlayerByNameAndTeam(sub.away_scorer.in, awayTeamId);
-        console.log(`[Substitute] Away in: ${sub.away_scorer.in} → Player: ${player?._id}`);
-        if (player) playerScores[player._id] = (playerScores[player._id] || 0) + 1;
-      }
-    }
-
-    // 📝 Update PlayerStat in DB
+    // Step 6: Save only the players that actually played (lineup or subs)
     for (const [playerId, score] of Object.entries(playerScores)) {
-      console.log(`[DB Update] Player ID: ${playerId}, Score delta: ${score}`);
-      const result = await this.playerStatModel.findOneAndUpdate(
-        { player_id: Number(playerId), round_id: currentRound._id },
+      const pid = Number(playerId);
+      if (!allInMatchPlayers.has(pid)) continue;
+
+      await this.playerStatModel.findOneAndUpdate(
+        { player_id: pid, round_id: currentRound._id },
         { $inc: { score: score } },
         { upsert: true, new: true }
       );
-      console.log(`[DB Update Result]`, result);
+      console.log(`[DB Update] Player ${pid} → Score delta: ${score}`);
     }
   }
 
   console.log('[updateLivePlayerStatsFromApi] Finished updating player stats.');
 }
 
+
+// Supporting function for goal points by position (unchanged)
+private getGoalPointsByPosition(position: string): number {
+  switch (position?.toLowerCase()) {
+    case 'goalkeepers':
+      return 10;
+    case 'defender':
+      return 6;
+    case 'midfielder':
+      return 5;
+    case 'forward':
+    default:
+      return 4;
+  }
+}
+
+// Supporting function to find player by name and team (unchanged)
 private async findPlayerByNameAndTeam(playerName: string, apiTeamId: number) {
   const team = await this.teamModel.findOne({ team_id: apiTeamId });
   if (!team) return null;
 
   return this.playerModel.findOne({
     name: { $regex: new RegExp(`^${this.escapeRegex(playerName)}$`, 'i') },
-    team_id: team._id, // Must use ObjectId
+    team_id: team._id,
   });
 }
+
+// Regex escape (unchanged)
 private escapeRegex(text: string): string {
   return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
 }
 
 
 
+
+
   getMockLiveScores(): any {
     return {
-      success: 1,
-      result: [
-        {
-          event_key: '99887',
-          event_date: '2025-07-19',
-          event_time: '17:00',
-          event_home_team: 'EGS Gafsa',
-          home_team_key: '7594',
-          event_away_team: 'Bizertin',
-          away_team_key: '7623',
-          event_halftime_result: '1 - 0',
-          event_final_result: '',
-          event_ft_result: '',
-          event_penalty_result: '',
-          event_status: '74', // 74th minute
-          country_name: 'Tunisia',
-          league_name: 'Ligue Professionnelle 1',
-          league_key: '100',
-          league_round: '25',
-          league_season: '2024/2025',
-          event_live: '1',
-          event_stadium: 'Stade Gafsa',
-          event_referee: 'Ali Ben Salah',
-          event_country_key: '27',
-          league_logo: 'https://example.com/logo_leagues/tunisia_ligue1.png',
-          country_logo: 'https://example.com/logo_country/tunisia.png',
-          event_home_formation: '4-3-3',
-          event_away_formation: '4-4-2',
-          fk_stage_key: '888',
-          stage_name: 'Regular Season',
-          goalscorers: [
+    "success": 1,
+    "result": [{
+        "event_key": 1572949,
+        "event_date": "2025-07-21",
+        "event_time": "16:30",
+        "event_home_team": "EGS Gafsa",
+        "home_team_key": 7594,
+        "event_away_team": "Bizertin",
+        "away_team_key": 7623,
+        "event_halftime_result": "0 - 0",
+        "event_final_result": "0 - 0",
+        "event_ft_result": "",
+        "event_penalty_result": "",
+        "event_status": "46",
+        "country_name": "Tunisia",
+        "league_name": "Ligue Professionnelle 1",
+        "league_key": 344,
+        "league_round": "Round 1",
+        "league_season": "2025\/2026",
+        "event_live": "1",
+        "event_stadium": "",
+        "event_referee": "Mohamed Benali, Tunisia",
+        "home_team_logo": "https:\/\/apiv2.allsportsapi.com\/logo\/7594_egs-gafsa.jpg",
+        "away_team_logo": "https:\/\/apiv2.allsportsapi.com\/logo\/7623_bizertin.jpg",
+        "event_country_key": 95,
+        "league_logo": "https:\/\/apiv2.allsportsapi.com\/logo\/logo_leagues\/344_ligue-professionnelle-1.png",
+        "country_logo": "https:\/\/apiv2.allsportsapi.com\/logo\/logo_country\/95_tunisia.png",
+        "event_home_formation": "3-4-1-2",
+        "event_away_formation": "4-2-3-1",
+        "fk_stage_key": 1516,
+        "stage_name": "Current",
+        "league_group": null,
+        "goalscorers": [
             {
-              time: '23',
-              home_scorer: 'N. Agbre',
-              score: '1 - 0',
-              away_scorer: '',
-            },
-            {
-              time: '61',
+              time: '34',
               home_scorer: '',
-              score: '1 - 1',
-              away_scorer: 'Bizertin Player 9',
+              score: '0 - 1',
+              away_scorer: 'K. Amdouni',
             },
-          ],
-          cards: [
-            {
-              time: '33',
-              home_fault: 'A. Barbati',
-              card: 'yellow card',
-              away_fault: '',
+
+               {
+              time: '75',
+              home_scorer: '',
+              score: '0 - 2',
+              away_scorer: 'K. Amdouni',
             },
-          ],
-          substitutes: [
-            {
-              time: '46',
-              home_scorer: {
-                in: 'A. Chebbi',
-                out: 'B. Chaabani',
-              },
-              score: 'substitution',
-              away_scorer: [],
-            },
-          ],
-          lineups: {
-            home_team: {
-              starting_lineups: [
-                { player: 'N. Agbre', player_number: '4', player_country: 'Tunisia' },
-                { player: 'A. Barbati', player_number: '5', player_country: 'Tunisia' },
-                { player: 'A. Horchani', player_number: '6', player_country: 'Tunisia' },
-                { player: 'O. Jebali', player_number: '7', player_country: 'Tunisia' },
-                { player: 'N. Khedher', player_number: '8', player_country: 'Tunisia' },
-              ],
-              substitutes: [
-                { player: 'B. Chaabani', player_number: '9', player_country: 'Tunisia' },
-                { player: 'A. Chebbi', player_number: '10', player_country: 'Tunisia' },
-                { player: 'A. Chokri', player_number: '11', player_country: 'Tunisia' },
-              ],
-              coaches: [
-                { coache: 'Coach Gafsa', coache_country: 'Tunisia' },
-              ],
-            },
-          },
-          statistics: [
-            { type: 'Shots Blocked', home: '2', away: '5' },
-            { type: 'Shots Inside Box', home: '6', away: '3' },
-            { type: 'Shots Outside Box', home: '4', away: '6' },
-            { type: 'Possession', home: '58%', away: '42%' },
-            { type: 'Yellow Cards', home: '1', away: '1' },
-            { type: 'Fouls', home: '12', away: '14' },
-          ],
+
+
+
+        ],
+        "substitutes": [],
+        "cards": [{
+            "time": "11",
+            "home_fault": "",
+            "card": "yellow card",
+            "away_fault": "K. Amdouni",
+            "info": "",
+            "home_player_id": "",
+            "away_player_id": "3236899489",
+            "info_time": "1st Half"
+        }, {
+            "time": "39",
+            "home_fault": "",
+            "card": "yellow card",
+            "away_fault": "W. Ghozzi",
+            "info": "",
+            "home_player_id": "",
+            "away_player_id": "1235053920",
+            "info_time": "1st Half"
+        }],
+        "vars": {
+            "home_team": [],
+            "away_team": []
         },
-      ],
-    };
-  }
+        "lineups": {
+            "home_team": {
+                "starting_lineups": [{
+                    "player": "O. Boufalgha",
+                    "player_number": 1,
+                    "player_position": 1,
+                    "player_country": null,
+                    "player_key": 4153598964,
+                    "info_time": ""
+                }, {
+                    "player": "A. Frioui",
+                    "player_number": 5,
+                    "player_position": 2,
+                    "player_country": null,
+                    "player_key": 1247729373,
+                    "info_time": ""
+                }, {
+                    "player": "R. Jeridi",
+                    "player_number": 38,
+                    "player_position": 3,
+                    "player_country": null,
+                    "player_key": 3551461654,
+                    "info_time": ""
+                }, {
+                    "player": "R. Rabha",
+                    "player_number": 44,
+                    "player_position": 4,
+                    "player_country": null,
+                    "player_key": 2390880897,
+                    "info_time": ""
+                }, {
+                    "player": "M. Yahiaoui",
+                    "player_number": 31,
+                    "player_position": 5,
+                    "player_country": null,
+                    "player_key": 1587886890,
+                    "info_time": ""
+                }, {
+                    "player": "H. Abbès",
+                    "player_number": 8,
+                    "player_position": 6,
+                    "player_country": null,
+                    "player_key": 1005132206,
+                    "info_time": ""
+                }, {
+                    "player": "N. Agbre",
+                    "player_number": 33,
+                    "player_position": 7,
+                    "player_country": null,
+                    "player_key": 3746544947,
+                    "info_time": ""
+                }, {
+                    "player": "A. Barbati",
+                    "player_number": 3,
+                    "player_position": 8,
+                    "player_country": null,
+                    "player_key": 2371382726,
+                    "info_time": ""
+                }, {
+                    "player": "B. Chaabani",
+                    "player_number": 20,
+                    "player_position": 9,
+                    "player_country": null,
+                    "player_key": 3241129426,
+                    "info_time": ""
+                }, {
+                    "player": "A. Chebbi",
+                    "player_number": 9,
+                    "player_position": 10,
+                    "player_country": null,
+                    "player_key": 3422599257,
+                    "info_time": ""
+                }, {
+                    "player": "A. Chokri",
+                    "player_number": 7,
+                    "player_position": 11,
+                    "player_country": null,
+                    "player_key": 2242913284,
+                    "info_time": ""
+                }],
+                "substitutes": [{
+                    "player": "Andrey Khodanovich",
+                    "player_number": 95,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 778692371,
+                    "info_time": ""
+                }, {
+                    "player": "Nikolay Sysuev",
+                    "player_number": 99,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3081256744,
+                    "info_time": ""
+                }, {
+                    "player": "Danila Khotulev",
+                    "player_number": 4,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1256505688,
+                    "info_time": ""
+                }, {
+                    "player": "Maksim Syshchenko",
+                    "player_number": 59,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3426939568,
+                    "info_time": ""
+                }, {
+                    "player": "Stanislav Poroykov",
+                    "player_number": 2,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1821228855,
+                    "info_time": ""
+                }, {
+                    "player": "Aleksey Baranovskiy",
+                    "player_number": 96,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 786516877,
+                    "info_time": ""
+                }, {
+                    "player": "Stepan Oganesyan",
+                    "player_number": 11,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3153584749,
+                    "info_time": ""
+                }, {
+                    "player": "Evgeniy Bolotov",
+                    "player_number": 57,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 4139143435,
+                    "info_time": ""
+                }, {
+                    "player": "Aleksandr Lomakin",
+                    "player_number": 17,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3494252740,
+                    "info_time": ""
+                }, {
+                    "player": "Saeid Saharkhizan",
+                    "player_number": 10,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3819266680,
+                    "info_time": ""
+                }, {
+                    "player": "Gedeon Guzina",
+                    "player_number": 30,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 2874323482,
+                    "info_time": ""
+                }, {
+                    "player": "Jordhy Thompson",
+                    "player_number": 16,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1031681100,
+                    "info_time": ""
+                }],
+                "coaches": [{
+                    "coache": "A. Mansouri",
+                    "coache_country": null
+                }],
+                "missing_players": []
+            },
+            "away_team": {
+                "starting_lineups": [{
+                    "player": "K. Amdouni",
+                    "player_number": 35,
+                    "player_position": 1,
+                    "player_country": null,
+                    "player_key": 2595428187,
+                    "info_time": ""
+                }, {
+                    "player": "W. Ghozzi",
+                    "player_number": 22,
+                    "player_position": 2,
+                    "player_country": null,
+                    "player_key": 1443763763,
+                    "info_time": ""
+                }, {
+                    "player": "M. Hanzouli",
+                    "player_number": 90,
+                    "player_position": 3,
+                    "player_country": null,
+                    "player_key": 1235053920,
+                    "info_time": ""
+                }, {
+                    "player": "A. Krir",
+                    "player_number": 4,
+                    "player_position": 4,
+                    "player_country": null,
+                    "player_key": 1785276560,
+                    "info_time": ""
+                }, {
+                    "player": "S. Saidi",
+                    "player_number": 27,
+                    "player_position": 5,
+                    "player_country": null,
+                    "player_key": 4177909217,
+                    "info_time": ""
+                }, {
+                    "player": "Akermi",
+                    "player_number": 10,
+                    "player_position": 6,
+                    "player_country": null,
+                    "player_key": 2609000225,
+                    "info_time": ""
+                }, {
+                    "player": "Matvey Kislyak",
+                    "player_number": 31,
+                    "player_position": 7,
+                    "player_country": null,
+                    "player_key": 2141440049,
+                    "info_time": ""
+                }, {
+                    "player": "Kirill Glebov",
+                    "player_number": 17,
+                    "player_position": 8,
+                    "player_country": null,
+                    "player_key": 3236899489,
+                    "info_time": ""
+                }, {
+                    "player": "Artem Shumanskiy",
+                    "player_number": 8,
+                    "player_position": 9,
+                    "player_country": null,
+                    "player_key": 3941901646,
+                    "info_time": ""
+                }, {
+                    "player": "Danil Krugovoy",
+                    "player_number": 3,
+                    "player_position": 10,
+                    "player_country": null,
+                    "player_key": 1528096451,
+                    "info_time": ""
+                }, {
+                    "player": "Tamerlan Musaev",
+                    "player_number": 11,
+                    "player_position": 11,
+                    "player_country": null,
+                    "player_key": 304611866,
+                    "info_time": ""
+                }],
+                "substitutes": [{
+                    "player": "Vladislav Torop",
+                    "player_number": 49,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1632391446,
+                    "info_time": ""
+                }, {
+                    "player": "Egor Besaev",
+                    "player_number": 85,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 2075476281,
+                    "info_time": ""
+                }, {
+                    "player": "Mikhail Ryadno",
+                    "player_number": 68,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 524624712,
+                    "info_time": ""
+                }, {
+                    "player": "Dzhamalutdin Abdulkadyrov",
+                    "player_number": 23,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1471209977,
+                    "info_time": ""
+                }, {
+                    "player": "Artem Bandikyan",
+                    "player_number": 52,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 2672060954,
+                    "info_time": ""
+                }, {
+                    "player": "Khellven",
+                    "player_number": 13,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1292661913,
+                    "info_time": ""
+                }, {
+                    "player": "Sekou Koita",
+                    "player_number": 20,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 620333045,
+                    "info_time": ""
+                }, {
+                    "player": "Alerrandro",
+                    "player_number": 9,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 3630720486,
+                    "info_time": ""
+                }, {
+                    "player": "Matheus Alves",
+                    "player_number": 7,
+                    "player_position": 0,
+                    "player_country": null,
+                    "player_key": 1064928307,
+                    "info_time": ""
+                }],
+                "coaches": [{
+                    "coache": "H. Zouaoui",
+                    "coache_country": null
+                }],
+                "missing_players": []
+            }
+        },
+        "statistics": [{
+            "type": "Shots Total",
+            "home": "3",
+            "away": "6"
+        }, {
+            "type": "Shots On Goal",
+            "home": "2",
+            "away": "1"
+        }, {
+            "type": "Shots Off Goal",
+            "home": "1",
+            "away": "1"
+        }, {
+            "type": "Shots Blocked",
+            "home": "0",
+            "away": "4"
+        }, {
+            "type": "Shots Inside Box",
+            "home": "2",
+            "away": "3"
+        }, {
+            "type": "Shots Outside Box",
+            "home": "1",
+            "away": "3"
+        }, {
+            "type": "Fouls",
+            "home": "8",
+            "away": "7"
+        }, {
+            "type": "Corners",
+            "home": "4",
+            "away": "6"
+        }, {
+            "type": "Offsides",
+            "home": "0",
+            "away": "1"
+        }, {
+            "type": "Ball Possession",
+            "home": "43%",
+            "away": "57%"
+        }, {
+            "type": "Yellow Cards",
+            "home": "0",
+            "away": "1"
+        }, {
+            "type": "Saves",
+            "home": "2",
+            "away": "2"
+        }, {
+            "type": "Passes Total",
+            "home": "115",
+            "away": "159"
+        }, {
+            "type": "Passes Accurate",
+            "home": "87",
+            "away": "132"
+        }]
+    }]
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+}}

@@ -12,6 +12,7 @@ import { Round, RoundSchema } from './entities/round.entity';
     MongooseModule.forFeature([{ name: Round.name, schema: RoundSchema }]),
   ],
 
+  exports: [RoundService], // <-- must export it so other modules can use it
 
   controllers: [RoundController],
   providers: [RoundService]

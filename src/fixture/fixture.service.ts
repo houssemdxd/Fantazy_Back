@@ -6,6 +6,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Fixture } from './entities/fixture.entity';
 import { Team } from 'src/team/entities/team.entity';
 import { Round } from 'src/round/entities/round.entity';
+import { AnyARecord } from 'dns';
 
 @Injectable()
 export class FixtureService {
@@ -55,7 +56,8 @@ getSimplifiedFixtures() {
     }));
   }
 
-async createFixturesFromApi(): Promise<void> {
+async createFixturesFromApi(): Promise<Record<string, any>[]> {
+
   const fixtures = this.getSimplifiedFixtures();
 
   // Get the round with the highest roundNumber
@@ -83,6 +85,7 @@ async createFixturesFromApi(): Promise<void> {
       awayTeam: awayTeam._id,
       date: f.date,
       eventTime: f.eventTime,
+      round :latestRound
     });
 
     if (exists) {
@@ -103,6 +106,8 @@ async createFixturesFromApi(): Promise<void> {
     await fixture.save();
     console.log(`Saved fixture: ${homeTeam.name} vs ${awayTeam.name} on ${f.date}`);
   }
+
+  return fixtures
 }
 
 
@@ -115,8 +120,8 @@ async createFixturesFromApi(): Promise<void> {
   return   { "success": 1,
     "result": [{
         "event_key": 1433003,
-        "event_date": "2025-04-20",
-        "event_time": "15:30",
+        "event_date": "2025-07-26",
+        "event_time": "13:21",
         "event_home_team": "EGS Gafsa",
         "home_team_key": 7594,
         "event_away_team": "Bizertin",

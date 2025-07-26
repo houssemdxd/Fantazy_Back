@@ -39,6 +39,31 @@ export class PlayerStatsService {
   }
 
 
+  async generateRandomStatsForLastRound(): Promise<void> {
+  // Get the latest round by created date or round number
+const lastRound = await this.roundModel.findOne().sort({ roundNumber: -1 }).exec();
+  if (!lastRound) {
+    console.log('No rounds found.');
+    return;
+  }
+console.log("this is the mast round "+lastRound)
+  const players = await this.playerModel.find();
+
+  for (const player of players) {
+    const score = -1
+    //Math.floor(Math.random() * 11); // random score between 0 and 10
+
+    await this.playerStatModel.create({
+      player_id: player._id,
+      round_id: lastRound._id,
+      score,
+    });
+  }
+
+  console.log(`✅ Player stats generated for Round ${lastRound.roundNumber}`);
+}
+
+
   create(createPlayerStatDto: CreatePlayerStatDto) {
     return 'This action adds a new playerStat';
   }

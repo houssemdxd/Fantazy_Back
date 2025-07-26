@@ -23,6 +23,7 @@ imports: [
   ],
 
   controllers: [PlayerStatsController],
-  providers: [PlayerStatsService]
+  providers: [PlayerStatsService],
+  exports:[PlayerStatsService]
 })
 export class PlayerStatsModule {}

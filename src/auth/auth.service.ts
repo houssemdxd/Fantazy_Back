@@ -182,4 +182,9 @@ export class AuthService {
     const role = await this.rolesService.getRoleById(user.roleId.toString());
     return role.permissions;
   }
+
+public async getAllUsers(): Promise<User[]> {
+  return this.UserModel.find().exec();
+}
+
 }

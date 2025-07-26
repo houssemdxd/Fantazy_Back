@@ -31,7 +31,7 @@ export class FantasyTeamController {
 
 
 
-
+// GET LIST ROUNDS WITH PLAYERSTATS OF A USER 
 @Get('user-scores/:userId')
   async getUserFantasyTeamWithScores(@Param('userId') userId: string) {
     const userObjectId = new Types.ObjectId(userId);

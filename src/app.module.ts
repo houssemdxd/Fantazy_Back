@@ -17,6 +17,9 @@ import { RoundModule } from './round/round.module';
 import { WeeklyTeamModule } from './weekly-team/weekly-team.module';
 import { PlayerStatsModule } from './player-stats/player-stats.module';
 import { WeeklyScoreModule } from './weekly-score/weekly-score.module';
+import { RoundSchedulerService } from './round-scheduler/round-scheduler.service';
+import { ScheduleModule } from '@nestjs/schedule';
+import { RoundSchedulerModule } from './round-scheduler/RoundSchedulerModule';
 
 @Module({
   imports: [
@@ -25,6 +28,7 @@ import { WeeklyScoreModule } from './weekly-score/weekly-score.module';
       cache: true,
       load: [config],
     }),
+    ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (config) => ({
@@ -54,8 +58,9 @@ import { WeeklyScoreModule } from './weekly-score/weekly-score.module';
     WeeklyTeamModule,
     PlayerStatsModule,
     WeeklyScoreModule,
+    RoundSchedulerModule
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, RoundSchedulerService],
 })
 export class AppModule {}
